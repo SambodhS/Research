@@ -71,7 +71,7 @@ whole$RESPONDER <- Responder
 # Assigning MetOrigin-derived origins to top contributing metabolites of sPLS-DA model
 
 test <- whole %>%
-  filter(GROUP == "T72" & !is.na(RESPONDER))
+  filter(GROUP == "T0" & !is.na(RESPONDER))
 test_groups <- test$RESPONDER
 test <- test[,-c(899:900)]
 
@@ -84,5 +84,11 @@ loadings <- plotLoadings(model,
                          title = " ")
 contributions <- as.data.frame(loadings$X) %>%
   rownames_to_column() %>%
-  left_join(origins, by = c("rowname" = "BIOCHEMICAL"))
+  left_join(origins, by = c("rowname" = "BIOCHEMICAL")) %>%
+  left_join(pathways, by = c("rowname" = "BIOCHEMICAL")) %>%
+  dplyr::select(c(1, 9, 11, 14, 18)) %>%
+  filter(GroupContrib == "EarlyNon-Survivors") %>%
+  arrange(desc(importance))
 
+contributions <- contributions[,(c(1, 3, 4, 2, 5))]
+write_xlsx(contributions, "contributions.xlsx")
