@@ -1,6 +1,8 @@
 library(tidyverse)
 library(openxlsx2)
 library(mixOmics)
+library(caret)
+library(ROCR)
 
 setwd("~/Downloads")
 set.seed(123)
@@ -92,3 +94,36 @@ contributions <- as.data.frame(loadings$X) %>%
 
 contributions <- contributions[,(c(1, 3, 4, 2, 5))]
 write_xlsx(contributions, "contributions.xlsx")
+
+#### Logistic Regression ####
+
+# Using microbial-only metabolites as features in logit model
+
+pure <- data %>%
+  rownames_to_column() %>%
+  right_join(metabolites, by = c("rowname" = "metabolites")) %>%
+  left_join(origins, by = c("rowname" = "BIOCHEMICAL")) %>%
+  filter(grepl("Microbiota", Origin) & !grepl("Host", Origin) & !grepl("Food related", Origin) &
+           !grepl("Drug related", Origin) & !grepl("Environment", Origin)) %>%
+  column_to_rownames() %>%
+  dplyr::select(-c(504:508)) %>%
+  t() %>%
+  as.data.frame()
+pure$GROUP <- groups
+pure$RESPONDER <- Responder
+pure <- filter(pure, GROUP == "T72") %>%
+  mutate(RESPONDER = ifelse(RESPONDER == "Resolvers", 1, 0)) %>% # resolvers = 1 
+  dplyr::select(-9)
+pure <- pure[-136,] # removing patient with NA responder value 
+pure$RESPONDER <- as.factor(pure$RESPONDER)
+train_idx <- createDataPartition(pure$RESPONDER, times=1, p=0.8, list=FALSE)
+train <- pure[train_idx,]
+test <- pure[-train_idx,]
+
+model <- glm(RESPONDER ~ ., family=binomial, data=pure)
+summary(model)
+probs <- data.frame(probs = predict(model, test, type="response")) %>%
+  mutate(pred = ifelse(probs > 0.5, "1", "0"))
+print(probs$pred == test$RESPONDER)
+performance(prediction(predict(model, test, type="response"), test$RESPONDER), measure="auc")@y.values[[1]]
+            
