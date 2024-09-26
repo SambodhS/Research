@@ -7,7 +7,7 @@ library(ROCR)
 setwd("~/Downloads")
 
 data <- read_xlsx("~/Downloads/Research/Microbial/Data/Metabolomics Layer of PAMPer.xlsx")
-responder <- read_xlsx("~/Downloads/Research/Microbial/Data/Responder.xlsx")
+outcomes <- read_xlsx("~/Downloads/Research/Microbial/Data/Outcomes.xlsx")
 metabolites <- read_xlsx("~/Downloads/Research/Microbial/Data/Metabolites.xlsx")
 origins <- read_xlsx("~/Downloads/Research/Microbial/Data/Origins.xlsx")
 
@@ -23,11 +23,16 @@ data[,1] <- replace(data[,1], is.na(data[,1]), 0)
 colnames(data) <- names
 colnames(data)[1] <- "TIME"
 
-CClusters <- responder %>%
+CClusters <- outcomes %>%
   mutate(RESPONDER = case_when(
     !is.na(tdiff) & tdiff <= 3 ~ "EarlyNon-Survivors",
     (!is.na(tdiff) & tdiff > 3) | icu_los >= 7 ~ "NonResolvers",
-    is.na(tdiff) ~ "Resolvers"
+    is.na(tdiff) ~ "Resolvers" # & !is.na(icu_los) & icu_los < 7 ????
+  )) %>%
+  mutate(TDM = case_when(
+    !is.na(alive_at_30) & alive_at_30 == 1 ~ "Alive",
+    !is.na(alive_at_30) & alive_at_30 == 2 ~ "Dead",
+    alive_at_30 == 3 | is.na(alive_at_30) ~ NA
   ))
 data_row_names <- substr(rownames(data), 1, 8)
 matching_rows <- match(data_row_names, CClusters$`Study ID`)
@@ -35,6 +40,9 @@ data$RESPONDER <- NA
 matching_indices <- !is.na(matching_rows)
 data$RESPONDER[matching_indices] <- CClusters$RESPONDER[matching_rows[matching_indices]]
 Responder <- data$RESPONDER
+data$TDM <- NA
+data$TDM[matching_indices] <- CClusters$TDM[matching_rows[matching_indices]]
+TDM <- data$TDM
 
 data <- data[,-c(900:901)] %>%
   mutate(STATUS = case_when(
@@ -60,12 +68,14 @@ microbial <- data %>%
   as.data.frame()
 microbial$GROUP <- groups
 microbial$RESPONDER <- Responder
+microbial$TDM <- TDM
 
 whole <- data %>%
   t() %>%
   as.data.frame()
 whole$GROUP <- groups
 whole$RESPONDER <- Responder
+whole$TDM <- TDM
 
 #### sPLS-DA #### 
 
@@ -125,6 +135,13 @@ test_groups <- test$RESPONDER
 test <- test[,-c(151:152)]
 
 model <- mixOmics::splsda(train, train_groups)
+loadings <- plotLoadings(model, 
+                         contrib = 'max', 
+                         method = 'mean', 
+                         title = " ")
+contributions <- as.data.frame(loadings$X) %>%
+  arrange(desc(importance)) %>%
+  dplyr::select(8)
 auroc(model)
 auroc(model, test, test_groups)
 
@@ -136,10 +153,10 @@ pure <- data %>%
   rownames_to_column() %>%
   right_join(metabolites, by = c("rowname" = "metabolites")) %>%
   left_join(origins, by = c("rowname" = "BIOCHEMICAL")) %>%
-  #filter(rowname == "1-hydroxy-2-naphthalenecarboxylate" | rowname == "N-methylproline" |
-  #         rowname == "6-oxopiperidine-2-carboxylate") %>%
-  filter(grepl("Microbiota", Origin) & !grepl("Host", Origin) & !grepl("Food related", Origin) &
-           !grepl("Drug related", Origin) & !grepl("Environment", Origin)) %>%
+  filter(rowname == "1-hydroxy-2-naphthalenecarboxylate" | rowname == "N-methylproline" |
+           rowname == "6-oxopiperidine-2-carboxylate") %>%
+  #filter(grepl("Microbiota", Origin) & !grepl("Host", Origin) & !grepl("Food related", Origin) &
+  #         !grepl("Drug related", Origin) & !grepl("Environment", Origin)) %>%
   column_to_rownames() %>%
   dplyr::select(-c(504:508)) %>%
   t() %>%
@@ -148,36 +165,39 @@ pure$GROUP <- groups
 pure$RESPONDER <- Responder
 pure <- filter(pure, GROUP == "T72") %>%
   mutate(RESPONDER = ifelse(RESPONDER == "Resolvers", 1, 0)) %>% # resolvers = 1 
-  dplyr::select(-9)
-  #dplyr::select(-4)
+  #dplyr::select(-9)
+  dplyr::select(-4)
 pure <- pure[-136,] # removing patient with NA responder value 
 pure$RESPONDER <- as.factor(pure$RESPONDER)
 train_idx <- createDataPartition(pure$RESPONDER, times=1, p=0.8, list=FALSE)
 train <- pure[train_idx,]
 test <- pure[-train_idx,]
 
-model <- glm(RESPONDER ~ ., family=binomial, data=pure)
-summary(model)
+model <- glm(RESPONDER ~ ., family=binomial, data=train)
+summary(model) 
 probs <- data.frame(probs = predict(model, test, type="response")) %>%
   mutate(pred = ifelse(probs > 0.5, "1", "0"))
-print(probs$pred == test$RESPONDER)
 prediction <- prediction(predict(model, test, type="response"), test$RESPONDER)
 performance(prediction, measure="auc")@y.values[[1]]
-perf <- performance(prediction, "tpr", "fpr")
-plot(perf, col="red")
+print(sum(data.frame(probs$pred == test$RESPONDER), na.rm=TRUE))
+#perf <- performance(prediction, "tpr", "fpr")
+#plot(perf, col="red")
+
+(0.7236842+0.7894737+0.7631579+0.8421053+0.9013158+0.75+0.7039474+0.6907895+0.6381579+0.7960526)/10
+((18+20+20+21+21+18+19+20+21+18)/10)/27
 
 # Using sPLS-DA-selected top 20 contributing micromets in T72 outcome classification
 
 select <- data %>%
   rownames_to_column() %>%
   filter(rowname == "pentose acid*")%>%# | rowname == "dihydroferulate" | rowname == "3-(3-hydroxyphenyl)propionate" |
-           #rowname == "dimethylglycine" | rowname == "3-hydroxyhippurate" | rowname == "isovalerate (C5)" |
-           #rowname == "N-methylproline" | rowname == "stachydrine" | rowname == "S-methylcysteine" |
-           #rowname == "glycerol 3-phosphate" | rowname == "alpha-hydroxycaproate" |
-           #rowname == "ergothioneine" | rowname == "2-isopropylmalate" | rowname == "salicylate" |
-           #rowname == "4-hydroxyglutamate" | rowname == "beta-cryptoxanthin" |
-           #rowname == "quinate" | rowname == "ascorbate (Vitamin C)" | rowname == "1,6-anhydroglucose" |
-           #rowname == "deoxycholate") %>%
+           # rowname == "dimethylglycine" | rowname == "3-hydroxyhippurate" | rowname == "isovalerate (C5)" |
+           # rowname == "N-methylproline" | rowname == "stachydrine" | rowname == "S-methylcysteine" |
+           # rowname == "glycerol 3-phosphate" | rowname == "alpha-hydroxycaproate" |
+           # rowname == "ergothioneine" | rowname == "2-isopropylmalate" | rowname == "salicylate" |
+           # rowname == "4-hydroxyglutamate" | rowname == "beta-cryptoxanthin" |
+           # rowname == "quinate" | rowname == "ascorbate (Vitamin C)" | rowname == "1,6-anhydroglucose" |
+           # rowname == "deoxycholate") %>%
   column_to_rownames() %>%
   t() %>%
   as.data.frame()
@@ -191,15 +211,16 @@ train_idx <- createDataPartition(select$RESPONDER, times=1, p=0.8, list=FALSE)
 train <- select[train_idx,]
 test <- select[-train_idx,]
 
-model <- glm(RESPONDER ~ ., family=binomial, data=select)
+model <- glm(RESPONDER ~ ., family=binomial, data=train)
 summary(model)
 probs <- data.frame(probs = predict(model, test, type="response")) %>%
   mutate(pred = ifelse(probs > 0.5, "1", "0"))
-print(probs$pred == test$RESPONDER)
 prediction <- prediction(predict(model, test, type="response"), test$RESPONDER)
 performance(prediction, measure="auc")@y.values[[1]]
+print(sum(data.frame(probs$pred == test$RESPONDER), na.rm=TRUE))
 perf <- performance(prediction, "tpr", "fpr")
 plot(perf, col="red")
 
-(0.8027211+0.94375+0.7777778+0.8333333+0.6203209+0.8875+0.7395833+0.877551+0.8027211+0.6898396)/10
+(0.9319728+0.7575758+0.9387755+0.8181818+0.7282051+0.6782609+0.8947368+0.8571429+0.8777778+0.58125)/10
+((24+24+26+24+18+21+23+23+23+21)/10)/27
 
